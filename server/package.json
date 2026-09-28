@@ -1,0 +1,26 @@
+{
+  "name": "server",
+  "version": "1.0.0",
+  "type": "module",
+  "description": "",
+  "main": "index.js",
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1",
+    "start": "node app.config.js",
+    "dev": "nodemon app.config.js"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "dependencies": {
+    "@colyseus/schema": "^5.0.27",
+    "colyseus": "^0.18.5",
+    "cors": "^2.8.6",
+    "express": "^5.2.1",
+    "obscenity": "^0.4.6"
+  },
+  "devDependencies": {
+    "@colyseus/testing": "^0.18.5",
+    "nodemon": "^3.1.14"
+  }
+}
