@@ -6,7 +6,7 @@ import { buildWorld } from "../game/worldBuilder.js";
 import { createThirdPersonCamera } from "../game/thirdPersonCamera.js";
 import { createPreRaceCinematicCamera } from "../game/preRaceCinematicCamera.js";
 import { updateVehiclePosition } from "../game/vehicleController.js";
-import { createRaceLaneCurve } from "../game/track.js";
+import { createRaceLaneCurve, describeStartGrid } from "../game/track.js";
 import { generateWordSet } from "../typing/promptGenerator.js";
 import { calculateWPM } from "../typing/wpmCalc.js";
 import { calculateAccuracy } from "../typing/accuracyCalc.js";
@@ -112,6 +112,16 @@ export async function startMultiplayerRace(container, room) {
   // one lane per real player, assigned by their existing "slot" field
   const allPlayers = [...room.state.players.values()];
 
+  // Lanes follow the real road width; the car's measured width proves the road
+  // is wide enough for the grid.
+  const gridTrackWidth = world.layout.trackWidth;
+  const gridCarHalfWidth = (carBounds.max.x - carBounds.min.x) / 2;
+  describeStartGrid({
+    laneCount: Math.max(RACE_CONFIG.world.laneCount, allPlayers.length),
+    trackWidth: gridTrackWidth,
+    carHalfWidth: gridCarHalfWidth,
+  });
+
   const vehicles = new Map(); // sessionId -> { mesh, curve }
   let myVehicleMesh = null;
   allPlayers.forEach((p) => {
@@ -119,6 +129,8 @@ export async function startMultiplayerRace(container, room) {
       roadCenter,
       world.totalLength,
       p.slot ?? 0,
+      RACE_CONFIG.world.laneCount,
+      { trackWidth: gridTrackWidth },
     );
 
     const mesh = carModel.clone();

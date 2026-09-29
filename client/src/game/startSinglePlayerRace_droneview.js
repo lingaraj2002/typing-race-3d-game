@@ -22,6 +22,7 @@ import {
   createRaceLaneCurve,
   createRandomRaceLaneOrder,
   calculateLap,
+  describeStartGrid,
 } from "./track.js";
 
 export async function startSinglePlayerRace(container) {
@@ -466,16 +467,41 @@ export async function startSinglePlayerRace(container) {
   const vehicleSurfaceY = trackSurfaceY + 0.05;
   const roadCenter = world.layout.roadCenter;
 
+  // ── Vehicles ─────────────────────────────────────────────────────────────
+  // Loaded before the grid is laid out: the starting lanes depend on the real
+  // road width, and the car's measured width is what proves the road is wide
+  // enough for every car to sit fully inside the painted road.
+  const loadedCarModel = await loadVehicleModel(carModelUrl);
+  document.getElementById("pre-race-loading")?.remove();
+  loadedCarModel.scale.setScalar(RACE_CONFIG.vehicle.singlePlayerScale);
+  const carBounds = new THREE.Box3().setFromObject(loadedCarModel);
+  const carTopHeight = carBounds.max.y - carBounds.min.y;
+  const carCenter = carBounds.getCenter(new THREE.Vector3());
+  const carModel = new THREE.Group();
+  loadedCarModel.position.set(-carCenter.x, -carBounds.min.y, -carCenter.z);
+  carModel.add(loadedCarModel);
+
+  const gridTrackWidth = world.layout.trackWidth;
+  const gridCarHalfWidth = (carBounds.max.x - carBounds.min.x) / 2;
+  describeStartGrid({
+    trackWidth: gridTrackWidth,
+    carHalfWidth: gridCarHalfWidth,
+  });
+
   const laneOrder = createRandomRaceLaneOrder();
   const playerCurve = createRaceLaneCurve(
     roadCenter,
     world.totalLength,
     laneOrder[0],
+    undefined,
+    { trackWidth: gridTrackWidth },
   );
   const botCurves = laneOrder
     .slice(1)
     .map((laneIndex) =>
-      createRaceLaneCurve(roadCenter, world.totalLength, laneIndex),
+      createRaceLaneCurve(roadCenter, world.totalLength, laneIndex, undefined, {
+        trackWidth: gridTrackWidth,
+      }),
     );
 
   // ── Renderer & camera ────────────────────────────────────────────────────
@@ -503,17 +529,6 @@ export async function startSinglePlayerRace(container) {
   );
 
   let viewport = fitRendererToAspect(renderer, camera, container);
-
-  // ── Vehicles ─────────────────────────────────────────────────────────────
-  const loadedCarModel = await loadVehicleModel(carModelUrl);
-  document.getElementById("pre-race-loading")?.remove();
-  loadedCarModel.scale.setScalar(RACE_CONFIG.vehicle.singlePlayerScale);
-  const carBounds = new THREE.Box3().setFromObject(loadedCarModel);
-  const carTopHeight = carBounds.max.y - carBounds.min.y;
-  const carCenter = carBounds.getCenter(new THREE.Vector3());
-  const carModel = new THREE.Group();
-  loadedCarModel.position.set(-carCenter.x, -carBounds.min.y, -carCenter.z);
-  carModel.add(loadedCarModel);
 
   function prepareCarMesh(mesh, color) {
     mesh.traverse((child) => {

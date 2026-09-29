@@ -123,21 +123,143 @@ export function createTrackCurve(
   return new EllipseCurve(centerX, centerZ, laneOffset);
 }
 
+// ─── Starting Grid Layout ────────────────────────────────────────────────────
+//
+// The asphalt ribbon is wider than the road the player actually reads as
+// drivable: the cream edge lines in the road texture are painted a little
+// inboard of the ribbon edges (see createRoadTexture), so the usable width is
+// the span between those lines. Laying lanes out on the full ribbon width puts
+// the outside cars' wheels past the painted line, which reads as "hanging off
+// the road". The edge-line inset is therefore derived from the same constants
+// the texture uses, so the two can never drift apart.
+const ROAD_TEXTURE_SIZE = 512;
+const ROAD_EDGE_LINE_INSET = 20;
+const ROAD_EDGE_LINE_WIDTH = 8;
+// Inner edge of the left/right cream line, in texture pixels.
+const ROAD_DRIVABLE_INSET =
+  ROAD_EDGE_LINE_INSET + ROAD_EDGE_LINE_WIDTH; // 28px
+const ROAD_DRIVABLE_WIDTH_RATIO =
+  (ROAD_TEXTURE_SIZE - ROAD_DRIVABLE_INSET * 2) / ROAD_TEXTURE_SIZE;
+
+// Breathing room between the outermost car and the painted line.
+const LANE_EDGE_MARGIN = 0.3;
+
+/** Usable road width between the painted edge lines, for a given ribbon width. */
+export function roadDrivableWidth(trackWidth) {
+  return trackWidth * ROAD_DRIVABLE_WIDTH_RATIO;
+}
+
+/**
+ * Lateral offset of one grid lane centre from the road centre, in world units.
+ *
+ * The lanes divide the DRIVABLE width (the span between the painted edge
+ * lines) evenly, and each car sits centred in its lane. That keeps the grid
+ * symmetric about the centreline, keeps every gap equal, and is driven purely
+ * by the road width, so it stays correct for any road width. The car's width
+ * only decides whether the road is wide ENOUGH — see minimumTrackWidth — and
+ * never squeezes the spacing, so a wide car cannot silently push the lanes
+ * around.
+ */
+export function computeLaneOffset(
+  laneIndex,
+  {
+    laneCount = RACE_CONFIG.world.laneCount,
+    trackWidth = RACE_CONFIG.world.trackWidth,
+  } = {},
+) {
+  const safeLaneCount = Math.max(1, Math.floor(laneCount));
+  const centeredLaneIndex = THREE.MathUtils.clamp(
+    Math.floor(laneIndex),
+    0,
+    safeLaneCount - 1,
+  );
+  const laneWidth = roadDrivableWidth(trackWidth) / safeLaneCount;
+  return -drivableHalfWidth(trackWidth) + laneWidth * (centeredLaneIndex + 0.5);
+}
+
+/**
+ * Texture-space (0..1 across the road width) position of a lateral offset.
+ * Used to paint the dashed lane dividers at the same places the grid sits.
+ */
+export function roadUForLateralOffset(lateralOffset, trackWidth) {
+  return 0.5 + lateralOffset / trackWidth;
+}
+
+/** Half the usable width between the painted edge lines. */
+export function drivableHalfWidth(trackWidth) {
+  return roadDrivableWidth(trackWidth) / 2;
+}
+
+/** Minimum ribbon width that fits `laneCount` cars of `carHalfWidth` side by side. */
+export function minimumTrackWidth(
+  {
+    laneCount = RACE_CONFIG.world.laneCount,
+    carHalfWidth = 0,
+  } = {},
+) {
+  const safeLaneCount = Math.max(1, Math.floor(laneCount));
+  const neededDrivable = safeLaneCount * (carHalfWidth * 2 + LANE_EDGE_MARGIN * 2);
+  return neededDrivable / ROAD_DRIVABLE_WIDTH_RATIO;
+}
+
+/**
+ * Describes how a grid of `laneCount` cars sits on a road of `trackWidth`,
+ * using the same numbers the lane curves and the road markings use.
+ *
+ * Call this with the car's real measured half-width to check the outermost car
+ * still fits inside the painted road; it warns and reports `fits: false`
+ * instead of silently placing cars off the road.
+ */
+export function describeStartGrid(
+  {
+    laneCount = RACE_CONFIG.world.laneCount,
+    trackWidth = RACE_CONFIG.world.trackWidth,
+    carHalfWidth = 0,
+  } = {},
+) {
+  const safeLaneCount = Math.max(1, Math.floor(laneCount));
+  const drivable = roadDrivableWidth(trackWidth);
+  const laneWidth = drivable / safeLaneCount;
+  const laneOffsets = Array.from({ length: safeLaneCount }, (_, index) =>
+    computeLaneOffset(index, { laneCount, trackWidth }),
+  );
+  const outerCarEdge =
+    Math.max(...laneOffsets.map((offset) => Math.abs(offset))) + carHalfWidth;
+  const clearance = drivable / 2 - outerCarEdge;
+  const fits = clearance >= 0;
+
+  if (!fits) {
+    console.warn(
+      `[track] ${safeLaneCount} cars of width ${(carHalfWidth * 2).toFixed(2)} overhang the road: ` +
+        `outer car edge ${outerCarEdge.toFixed(2)} vs drivable half-width ${(drivable / 2).toFixed(2)}. ` +
+        `Raise world.trackWidth to at least ${minimumTrackWidth({ laneCount, carHalfWidth }).toFixed(2)}.`,
+    );
+  }
+
+  return {
+    trackWidth,
+    laneCount: safeLaneCount,
+    laneWidth,
+    drivableWidth: drivable,
+    drivableHalfWidth: drivable / 2,
+    laneOffsets,
+    carHalfWidth,
+    outerCarEdge,
+    // Negative means the outer car already sits inside the painted road.
+    clearance,
+    requiredTrackWidth: minimumTrackWidth({ laneCount, carHalfWidth }),
+    fits,
+  };
+}
+
 export function createRaceLaneCurve(
   roadCenter,
   length,
   laneIndex,
   laneCount = RACE_CONFIG.world.laneCount,
+  { trackWidth = RACE_CONFIG.world.trackWidth } = {},
 ) {
-  const safeLaneCount = Math.max(1, Math.floor(laneCount));
-  const laneWidth = RACE_CONFIG.world.trackWidth / safeLaneCount;
-  const centeredLaneIndex = THREE.MathUtils.clamp(
-    laneIndex,
-    0,
-    safeLaneCount - 1,
-  );
-  const laneOffset =
-    (centeredLaneIndex - (safeLaneCount - 1) / 2) * laneWidth;
+  const laneOffset = computeLaneOffset(laneIndex, { laneCount, trackWidth });
   return createTrackCurve(laneOffset, length, roadCenter, 0);
 }
 
@@ -459,7 +581,7 @@ const DASH_PERIOD = 10.4;
 const DASH_FRACTION = 3.9 / 10.4;
 
 function createRoadTexture(repeatV) {
-  const size = 512;
+  const size = ROAD_TEXTURE_SIZE;
   const canvas = document.createElement("canvas");
   canvas.width = size;
   canvas.height = size;
@@ -477,16 +599,26 @@ function createRoadTexture(repeatV) {
     ctx.fillRect(Math.random() * size, Math.random() * size, 3, 3);
   }
 
-  // Solid warm cream edge lines.
+  // Solid warm cream edge lines. Positioned from the same constants the grid
+  // layout uses, so the painted road edge and the lane spacing stay in sync.
   ctx.fillStyle = "#f9f3d9";
-  ctx.fillRect(20, 0, 8, size);
-  ctx.fillRect(size - 28, 0, 8, size);
+  ctx.fillRect(ROAD_EDGE_LINE_INSET, 0, ROAD_EDGE_LINE_WIDTH, size);
+  ctx.fillRect(
+    size - ROAD_EDGE_LINE_INSET - ROAD_EDGE_LINE_WIDTH,
+    0,
+    ROAD_EDGE_LINE_WIDTH,
+    size,
+  );
 
-  // Dashed lane dividers.
+  // Dashed lane dividers, painted midway between adjacent grid lanes so the
+  // markings line up with where the cars actually sit.
   ctx.fillStyle = "rgba(249, 243, 217, 0.95)";
   const dashHeight = size * DASH_FRACTION;
   for (let laneIndex = 1; laneIndex < RACE_CONFIG.world.laneCount; laneIndex++) {
-    const x = Math.round((size * laneIndex) / RACE_CONFIG.world.laneCount);
+    const boundary = (computeLaneOffset(laneIndex - 1) + computeLaneOffset(laneIndex)) / 2;
+    const x = Math.round(
+      roadUForLateralOffset(boundary, RACE_CONFIG.world.trackWidth) * size,
+    );
     ctx.fillRect(x - 3, 0, 6, dashHeight);
   }
 
@@ -686,7 +818,21 @@ const PROP_MUTING = Object.freeze({
   treeGrp: 0.5,
 });
 
-function tintPropModel(model, tint, muting = 0) {
+// Foliage and stone still read as dark masses next to the pale sand and hazy
+// sky, so those props get lifted toward white after tinting. Anything omitted
+// (the fence, the palms, the boats) keeps its current value.
+const PROP_LIGHTENING = Object.freeze({
+  bush: 0.5,
+  grass: 0.52,
+  rock1: 0.44,
+  rock2: 0.44,
+  stoneGrp: 0.44,
+  treeGrp: 0.46,
+});
+
+const WHITE = new THREE.Color(0xffffff);
+
+function tintPropModel(model, tint, muting = 0, lightening = 0) {
   if (!tint) return;
   const tintColor = new THREE.Color(tint);
   const mutedColor = new THREE.Color();
@@ -700,22 +846,34 @@ function tintPropModel(model, tint, muting = 0) {
   });
   materials.forEach((material) => {
     material.color.multiply(tintColor);
-    if (muting <= 0) return;
-    const luma =
-      material.color.r * 0.2126 +
-      material.color.g * 0.7152 +
-      material.color.b * 0.0722;
-    // Noticeably warm, slightly lifted neutral rather than flat gray: it
-    // brightens dark shadowed foliage, strips the lime out of the grass, and
-    // kills the blue-gray the sky light leaves on upward-facing stone.
-    mutedColor.setRGB(luma * 1.06, luma, luma * 0.9);
-    material.color.lerp(mutedColor, muting);
+    if (muting > 0) {
+      const luma =
+        material.color.r * 0.2126 +
+        material.color.g * 0.7152 +
+        material.color.b * 0.0722;
+      // Noticeably warm, slightly lifted neutral rather than flat gray: it
+      // brightens dark shadowed foliage, strips the lime out of the grass, and
+      // kills the blue-gray the sky light leaves on upward-facing stone.
+      mutedColor.setRGB(luma * 1.06, luma, luma * 0.9);
+      material.color.lerp(mutedColor, muting);
+    }
+    if (lightening > 0) {
+      // Lerping toward white raises the whole value range while keeping the
+      // muted warm hue, so shadows fill in instead of crushing to black.
+      material.color.lerp(WHITE, lightening);
+    }
   });
 }
 
 function createFallbackProp(kind) {
   const group = new THREE.Group();
   group.name = `fallback-${kind}`;
+  // Fallbacks stand in for a failed GLB load, so they need the same lift the
+  // tinted models get or a prop would visibly darken the moment it swapped in.
+  const lit = (material) => {
+    if (PROP_LIGHTENING[kind] > 0) material.color.lerp(WHITE, PROP_LIGHTENING[kind]);
+    return material;
+  };
 
   const bark = new THREE.MeshStandardMaterial({
     color: kind.startsWith("palm")
@@ -749,9 +907,9 @@ function createFallbackProp(kind) {
   });
 
   if (kind === "treeGrp") {
-    group.add(mesh(new THREE.CylinderGeometry(0.35, 0.5, 3.2, 8), bark));
+    group.add(mesh(new THREE.CylinderGeometry(0.35, 0.5, 3.2, 8), lit(bark)));
     group.children[0].position.y = 1.6;
-    const canopy = mesh(new THREE.SphereGeometry(2.1, 10, 8), leaf);
+    const canopy = mesh(new THREE.SphereGeometry(2.1, 10, 8), lit(leaf));
     canopy.position.y = 4.1;
     canopy.scale.y = 0.85;
     group.add(canopy);
@@ -776,7 +934,7 @@ function createFallbackProp(kind) {
         : RACE_CONFIG.palette.treeLeafDark;
     const shrub = mesh(
       new THREE.SphereGeometry(kind === "grass" ? 0.55 : 0.9, 8, 6),
-      new THREE.MeshStandardMaterial({ color, roughness: 0.9 }),
+      lit(new THREE.MeshStandardMaterial({ color, roughness: 0.9 })),
     );
     shrub.position.y = kind === "grass" ? 0.35 : 0.7;
     shrub.scale.y = 0.7;
@@ -784,7 +942,7 @@ function createFallbackProp(kind) {
   } else if (kind === "rock1" || kind === "rock2" || kind === "stoneGrp") {
     const rock = mesh(
       new THREE.DodecahedronGeometry(kind === "stoneGrp" ? 1.4 : 0.9, 0),
-      sandRock,
+      lit(sandRock),
     );
     rock.position.y = 0.4;
     rock.scale.set(1.2, 0.7, 1);
@@ -1278,7 +1436,12 @@ export async function assembleTrackModel({ tileUrl, tileCount = 10 } = {}) {
   const modelEntries = await Promise.allSettled(
     Object.entries(PROP_URLS).map(async ([key, url]) => {
       const modelScene = await loadModel(url);
-      tintPropModel(modelScene, PROP_TINTS[key], PROP_MUTING[key]);
+      tintPropModel(
+        modelScene,
+        PROP_TINTS[key],
+        PROP_MUTING[key],
+        PROP_LIGHTENING[key],
+      );
       configureShadowMesh(modelScene);
       return [key, modelScene];
     }),
