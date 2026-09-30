@@ -136,8 +136,7 @@ const ROAD_TEXTURE_SIZE = 512;
 const ROAD_EDGE_LINE_INSET = 20;
 const ROAD_EDGE_LINE_WIDTH = 8;
 // Inner edge of the left/right cream line, in texture pixels.
-const ROAD_DRIVABLE_INSET =
-  ROAD_EDGE_LINE_INSET + ROAD_EDGE_LINE_WIDTH; // 28px
+const ROAD_DRIVABLE_INSET = ROAD_EDGE_LINE_INSET + ROAD_EDGE_LINE_WIDTH; // 28px
 const ROAD_DRIVABLE_WIDTH_RATIO =
   (ROAD_TEXTURE_SIZE - ROAD_DRIVABLE_INSET * 2) / ROAD_TEXTURE_SIZE;
 
@@ -191,14 +190,13 @@ export function drivableHalfWidth(trackWidth) {
 }
 
 /** Minimum ribbon width that fits `laneCount` cars of `carHalfWidth` side by side. */
-export function minimumTrackWidth(
-  {
-    laneCount = RACE_CONFIG.world.laneCount,
-    carHalfWidth = 0,
-  } = {},
-) {
+export function minimumTrackWidth({
+  laneCount = RACE_CONFIG.world.laneCount,
+  carHalfWidth = 0,
+} = {}) {
   const safeLaneCount = Math.max(1, Math.floor(laneCount));
-  const neededDrivable = safeLaneCount * (carHalfWidth * 2 + LANE_EDGE_MARGIN * 2);
+  const neededDrivable =
+    safeLaneCount * (carHalfWidth * 2 + LANE_EDGE_MARGIN * 2);
   return neededDrivable / ROAD_DRIVABLE_WIDTH_RATIO;
 }
 
@@ -210,13 +208,11 @@ export function minimumTrackWidth(
  * still fits inside the painted road; it warns and reports `fits: false`
  * instead of silently placing cars off the road.
  */
-export function describeStartGrid(
-  {
-    laneCount = RACE_CONFIG.world.laneCount,
-    trackWidth = RACE_CONFIG.world.trackWidth,
-    carHalfWidth = 0,
-  } = {},
-) {
+export function describeStartGrid({
+  laneCount = RACE_CONFIG.world.laneCount,
+  trackWidth = RACE_CONFIG.world.trackWidth,
+  carHalfWidth = 0,
+} = {}) {
   const safeLaneCount = Math.max(1, Math.floor(laneCount));
   const drivable = roadDrivableWidth(trackWidth);
   const laneWidth = drivable / safeLaneCount;
@@ -267,10 +263,7 @@ export function createRandomRaceLaneOrder(
   laneCount = RACE_CONFIG.world.laneCount,
 ) {
   const safeLaneCount = Math.max(1, Math.floor(laneCount));
-  const laneOrder = Array.from(
-    { length: safeLaneCount },
-    (_, index) => index,
-  );
+  const laneOrder = Array.from({ length: safeLaneCount }, (_, index) => index);
   for (let index = laneOrder.length - 1; index > 0; index--) {
     const swapIndex = Math.floor(Math.random() * (index + 1));
     [laneOrder[index], laneOrder[swapIndex]] = [
@@ -436,7 +429,8 @@ export function beachHeightOffset(x, z) {
     (1 - smoothstep(BEACH_DUNE_TOP, BEACH_DUNE_END, seaward));
 
   const slope =
-    BEACH_SLOPE_BOTTOM * smoothstep(BEACH_SLOPE_START, BEACH_SLOPE_END, seaward);
+    BEACH_SLOPE_BOTTOM *
+    smoothstep(BEACH_SLOPE_START, BEACH_SLOPE_END, seaward);
 
   const sandUndulation =
     BEACH_SAND_AMP *
@@ -614,8 +608,13 @@ function createRoadTexture(repeatV) {
   // markings line up with where the cars actually sit.
   ctx.fillStyle = "rgba(249, 243, 217, 0.95)";
   const dashHeight = size * DASH_FRACTION;
-  for (let laneIndex = 1; laneIndex < RACE_CONFIG.world.laneCount; laneIndex++) {
-    const boundary = (computeLaneOffset(laneIndex - 1) + computeLaneOffset(laneIndex)) / 2;
+  for (
+    let laneIndex = 1;
+    laneIndex < RACE_CONFIG.world.laneCount;
+    laneIndex++
+  ) {
+    const boundary =
+      (computeLaneOffset(laneIndex - 1) + computeLaneOffset(laneIndex)) / 2;
     const x = Math.round(
       roadUForLateralOffset(boundary, RACE_CONFIG.world.trackWidth) * size,
     );
@@ -839,7 +838,9 @@ function tintPropModel(model, tint, muting = 0, lightening = 0) {
   const materials = new Set();
   model.traverse((node) => {
     if (!node.isMesh || !node.material) return;
-    const materialList = Array.isArray(node.material) ? node.material : [node.material];
+    const materialList = Array.isArray(node.material)
+      ? node.material
+      : [node.material];
     materialList.forEach((material) => {
       if (material?.isMaterial) materials.add(material);
     });
@@ -871,7 +872,8 @@ function createFallbackProp(kind) {
   // Fallbacks stand in for a failed GLB load, so they need the same lift the
   // tinted models get or a prop would visibly darken the moment it swapped in.
   const lit = (material) => {
-    if (PROP_LIGHTENING[kind] > 0) material.color.lerp(WHITE, PROP_LIGHTENING[kind]);
+    if (PROP_LIGHTENING[kind] > 0)
+      material.color.lerp(WHITE, PROP_LIGHTENING[kind]);
     return material;
   };
 
@@ -1002,6 +1004,61 @@ function addPropAt(worldGroup, model, position, scale, rotationY) {
   prop.position.copy(position);
   prop.rotation.y = rotationY;
   worldGroup.add(prop);
+  return prop;
+}
+
+const propContactCache = new WeakMap();
+
+/**
+ * Horizontal half-extents of a model's ground-contact patch: the span of the
+ * geometry sitting within a hand's width of the model's own base.
+ *
+ * This is deliberately not the model's bounding box. A tree's box is dominated
+ * by a canopy held metres above the ground, so re-seating a tree on the lowest
+ * ground beneath its box would bury its trunk on every slope. The lowest band
+ * of geometry gives the part that actually has to be supported: a tree yields
+ * just its trunk, while a boulder or a stone cluster — wide and low — yields
+ * its whole footprint, which is exactly what was left hanging in the air.
+ */
+function propContactPatch(model, scale) {
+  let raw = propContactCache.get(model);
+  if (!raw) {
+    const box = new THREE.Box3().setFromObject(model);
+    const band = Math.min(0.4, (box.max.y - box.min.y) * 0.2);
+    const cutoff = box.min.y + band;
+    // A contact patch can never be wider than the asset it belongs to, which also
+    // catches a stray wide mesh sitting at the model's base.
+    const modelHalfX = Math.max(Math.abs(box.min.x), Math.abs(box.max.x));
+    const modelHalfZ = Math.max(Math.abs(box.min.z), Math.abs(box.max.z));
+    let halfX = 0;
+    let halfZ = 0;
+    const vertex = new THREE.Vector3();
+    const toModel = new THREE.Matrix4();
+    const meshToModel = new THREE.Matrix4();
+    model.updateMatrixWorld(true);
+    toModel.copy(model.matrixWorld).invert();
+    model.traverse((mesh) => {
+      if (!mesh.isMesh) return;
+      const position = mesh.geometry.getAttribute("position");
+      if (!position) return;
+      // Vertices live in each mesh's own space, so bring them into the model's
+      // space before measuring; a GLB's sub-meshes carry their own transforms.
+      meshToModel.multiplyMatrices(toModel, mesh.matrixWorld);
+      for (let i = 0; i < position.count; i++) {
+        vertex.fromBufferAttribute(position, i).applyMatrix4(meshToModel);
+        if (vertex.y > cutoff) continue;
+        halfX = Math.max(halfX, Math.abs(vertex.x));
+        halfZ = Math.max(halfZ, Math.abs(vertex.z));
+      }
+    });
+    // Measured in model units, so one traversal serves every scale of the asset.
+    raw = {
+      halfX: Math.min(halfX, modelHalfX),
+      halfZ: Math.min(halfZ, modelHalfZ),
+    };
+    propContactCache.set(model, raw);
+  }
+  return { halfX: raw.halfX * scale, halfZ: raw.halfZ * scale };
 }
 
 // Props drop onto the sculpted terrain, not the old flat surface: their (x, z)
@@ -1016,13 +1073,14 @@ function addInfieldProp(
   minClear,
   minFrac,
   scale,
+  groundToInfield = false,
 ) {
   const rx = Math.max(layout.innerRadiusX - minClear, 8);
   const rz = Math.max(layout.innerRadiusZ - minClear, 8);
   const { x, z } = randomInEllipse(rand, rx, rz, minFrac);
   const worldX = layout.centerX + x;
   const worldZ = layout.centerZ + z;
-  addPropAt(
+  const prop = addPropAt(
     worldGroup,
     model,
     new THREE.Vector3(
@@ -1033,6 +1091,14 @@ function addInfieldProp(
     scale,
     rand() * Math.PI * 2,
   );
+  if (groundToInfield) {
+    // Trees and rock clusters are wide or low enough that planting them at the
+    // ground directly beneath their origin left them hovering over the infield
+    // bank. Hand the world builder the contact patch so it can re-seat them on
+    // the lowest ground their base actually covers.
+    prop.userData.groundToInfield = true;
+    prop.userData.contactPatch = propContactPatch(model, scale);
+  }
 }
 
 function addBeachProp(
@@ -1047,7 +1113,8 @@ function addBeachProp(
 ) {
   const grow = growMin + rand() * (growMax - growMin);
   const position = ellipsePoint(layout, grow, rand() * Math.PI * 2, y);
-  position.y = layout.surfaceY - 0.08 + beachHeightOffset(position.x, position.z);
+  position.y =
+    layout.surfaceY - 0.08 + beachHeightOffset(position.x, position.z);
   addPropAt(worldGroup, model, position, scale, rand() * Math.PI * 2);
 }
 
@@ -1092,6 +1159,7 @@ function placeVegetation(worldGroup, layout, models) {
         infieldClear,
         0.1,
         0.42 + rand() * 0.32,
+        true,
       );
     }
   }
@@ -1197,6 +1265,7 @@ function placeRocks(worldGroup, layout, models) {
       6,
       0.1,
       0.12 + rand() * 0.18,
+      true,
     );
   }
 

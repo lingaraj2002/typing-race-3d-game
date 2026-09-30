@@ -66,7 +66,10 @@ function createEllipseRingGeometry(
   }
 
   const geometry = new THREE.BufferGeometry();
-  geometry.setAttribute("position", new THREE.Float32BufferAttribute(positions, 3));
+  geometry.setAttribute(
+    "position",
+    new THREE.Float32BufferAttribute(positions, 3),
+  );
   geometry.setAttribute("uv", new THREE.Float32BufferAttribute(uvs, 2));
   geometry.setIndex(indices);
   geometry.computeVertexNormals();
@@ -75,7 +78,13 @@ function createEllipseRingGeometry(
 
 function createOcean(worldGroup, layout) {
   const ocean = mesh(
-    createEllipseRingGeometry(layout.oceanRadiusX, layout.oceanRadiusZ, 0, 0, 72),
+    createEllipseRingGeometry(
+      layout.oceanRadiusX,
+      layout.oceanRadiusZ,
+      0,
+      0,
+      72,
+    ),
     new THREE.MeshStandardMaterial({
       color: RACE_CONFIG.palette.waterShallow,
       roughness: 0.15,
@@ -160,7 +169,11 @@ function createInfieldGround(worldGroup, layout) {
       { rows: INFIELD_ROWS, heightAt: infieldHeightOffset },
     ),
     new THREE.MeshStandardMaterial({
-      map: createGroundTexture("#87996b", "rgba(255,255,255,0.05)", "rgba(62,76,52,0.10)"),
+      map: createGroundTexture(
+        "#87996b",
+        "rgba(255,255,255,0.05)",
+        "rgba(62,76,52,0.10)",
+      ),
       color: 0xffffff,
       roughness: 0.92,
     }),
@@ -170,6 +183,116 @@ function createInfieldGround(worldGroup, layout) {
   grass.name = "infield-ground";
   worldGroup.add(grass);
   return grass;
+}
+
+const UP = new THREE.Vector3(0, 1, 0);
+const MAX_PROP_SLOPE = 0.6;
+
+/**
+ * Settle a prop onto the sculpted infield so nothing hovers over it.
+ *
+ * The infield bank climbs steeply just behind the road, and these props are
+ * wide enough to straddle that climb — `tree_grp` is a rigid cluster of a
+ * dozen trees spanning ~11 units, not a single trunk. Planting one at the
+ * ground height under its origin leaves its downhill end hanging in mid-air,
+ * which is what the driver sees on the right-hand side of the track.
+ *
+ * Two steps fix that. First lean the prop until its base runs parallel to the
+ * slope, the way a tree or boulder on a bank actually stands; the base is
+ * planar and the tilt pivots on the prop's origin, so the base plane still
+ * passes through the origin afterwards. Then drop it onto the lowest ground
+ * under its footprint, so every part of the base ends up touching or below the
+ * terrain.
+ *
+ * A rigid flat base cannot sit flush along its whole width on a curved bank,
+ * so the last step necessarily trades the hover for depth: the four widest tree
+ * clusters, which straddle the ridge flank where the ground falls up to 6 units
+ * across their span, end up bedded into the slope instead. That is the correct
+ * side to err on — a tree bedded into a bank reads as terrain, a tree hanging in
+ * the air with daylight under it reads as a bug.
+ */
+function groundInfieldProps(trackGroup, infieldGround) {
+  trackGroup.updateMatrixWorld(true);
+  infieldGround.updateMatrixWorld(true);
+  const raycaster = new THREE.Raycaster();
+  const down = new THREE.Vector3(0, -1, 0);
+  const scratch = new THREE.Vector3();
+  const up = new THREE.Vector3();
+  const tilt = new THREE.Quaternion();
+  const yaw = new THREE.Quaternion();
+
+  trackGroup.traverse((prop) => {
+    if (!prop.userData.groundToInfield) return;
+    const patch = prop.userData.contactPatch;
+    if (!patch) return;
+
+    const bounds = new THREE.Box3().setFromObject(prop);
+    const cos = Math.cos(prop.rotation.y);
+    const sin = Math.sin(prop.rotation.y);
+    // Where the prop's own local X and Z axes point, in world space.
+    const axisX = { x: cos, z: -sin };
+    const axisZ = { x: sin, z: cos };
+
+    const STEPS = [-1, -0.5, 0, 0.5, 1];
+    const grid = STEPS.map(() => new Array(STEPS.length).fill(null));
+    for (let i = 0; i < STEPS.length; i++) {
+      for (let j = 0; j < STEPS.length; j++) {
+        const lx = STEPS[i] * patch.halfX;
+        const lz = STEPS[j] * patch.halfZ;
+        const x = prop.position.x + lx * axisX.x + lz * axisZ.x;
+        const z = prop.position.z + lx * axisX.z + lz * axisZ.z;
+        raycaster.set(scratch.set(x, bounds.max.y + 40, z), down);
+        const hit = raycaster.intersectObject(infieldGround, false)[0];
+        if (hit) grid[i][j] = { x, z, y: hit.point.y };
+      }
+    }
+    const last = STEPS.length - 1;
+    const at = (i, j) => grid[i][j];
+    const samples = grid.flat().filter(Boolean);
+    if (samples.length < 3) return;
+
+    // Least-squares ground plane y = a*x + b*z + c. On a regular grid the
+    // central differences give the gradient that minimises the residual.
+    let gradeX = 0;
+    let gradeZ = 0;
+    if (patch.halfX > 0.001) {
+      const near = at(0, Math.floor(last / 2));
+      const far = at(last, Math.floor(last / 2));
+      if (near && far) gradeX = (far.y - near.y) / (2 * patch.halfX);
+    }
+    if (patch.halfZ > 0.001) {
+      const near = at(Math.floor(last / 2), 0);
+      const far = at(Math.floor(last / 2), last);
+      if (near && far) gradeZ = (far.y - near.y) / (2 * patch.halfZ);
+    }
+
+    // Keep an absurdly steep reading from tipping a prop onto its side.
+    const grade = Math.hypot(gradeX, gradeZ);
+    if (grade > MAX_PROP_SLOPE) {
+      const trim = MAX_PROP_SLOPE / grade;
+      gradeX *= trim;
+      gradeZ *= trim;
+    }
+
+    let offset = 0;
+    for (const s of samples) offset += s.y - (gradeX * s.x + gradeZ * s.z);
+    offset /= samples.length;
+    const planeAt = (x, z) => gradeX * x + gradeZ * z + offset;
+
+    yaw.setFromAxisAngle(UP, prop.rotation.y);
+    up.set(-gradeX, 1, -gradeZ).normalize();
+    tilt.setFromUnitVectors(UP, up);
+    prop.quaternion.copy(tilt).multiply(yaw);
+
+    // The bank is curved, so a flat base can never sit flush along its whole
+    // width. Lowering to the lowest residual keeps every part of the base in
+    // contact with or below the ground — nothing hovers — and the only thing
+    // left over is the unavoidable misfit, which reads as a tree or boulder
+    // bedded into the slope.
+    let lowest = Infinity;
+    for (const s of samples) lowest = Math.min(lowest, s.y - planeAt(s.x, s.z));
+    prop.position.y = planeAt(prop.position.x, prop.position.z) + lowest - 0.015;
+  });
 }
 
 // ─── Clouds ──────────────────────────────────────────────────────────────────
@@ -185,7 +308,8 @@ function createCloudPuffGeometry(radius) {
     const a = index.getX(i);
     const b = index.getX(i + 1);
     const c = index.getX(i + 2);
-    const averageY = (position.getY(a) + position.getY(b) + position.getY(c)) / 3;
+    const averageY =
+      (position.getY(a) + position.getY(b) + position.getY(c)) / 3;
     const target = averageY >= 0 ? topIndices : undersideIndices;
     target.push(a, b, c);
   }
@@ -226,7 +350,11 @@ function createClouds(worldGroup, layout) {
         cloudTopMaterial,
         cloudUndersideMaterial,
       ]);
-      puff.position.set((rand() - 0.5) * 12, (rand() - 0.5) * 2, (rand() - 0.5) * 6);
+      puff.position.set(
+        (rand() - 0.5) * 12,
+        (rand() - 0.5) * 2,
+        (rand() - 0.5) * 6,
+      );
       puff.scale.y = 0.45 + rand() * 0.25;
       puff.updateMatrix();
       cloud.add(puff);
@@ -253,15 +381,22 @@ function createClouds(worldGroup, layout) {
  * ground) and clouds so track asset maintenance stays in one file.
  */
 export async function buildWorld(scene, tileUrl, { tileCount = 10 } = {}) {
-  const { group: trackGroup, layout, surfaceY, totalLength, tileLength, tileWidth } =
-    await assembleTrackModel({ tileUrl, tileCount });
+  const {
+    group: trackGroup,
+    layout,
+    surfaceY,
+    totalLength,
+    tileLength,
+    tileWidth,
+  } = await assembleTrackModel({ tileUrl, tileCount });
 
   const worldGroup = new THREE.Group();
   worldGroup.name = "world";
 
   createOcean(worldGroup, layout);
   createBeach(worldGroup, layout);
-  createInfieldGround(worldGroup, layout);
+  const infieldGround = createInfieldGround(worldGroup, layout);
+  groundInfieldProps(trackGroup, infieldGround);
   worldGroup.add(trackGroup);
 
   const clouds = createClouds(worldGroup, layout);
