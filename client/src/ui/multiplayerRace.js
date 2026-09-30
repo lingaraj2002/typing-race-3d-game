@@ -10,7 +10,11 @@ import { createRaceLaneCurve, describeStartGrid } from "../game/track.js";
 import { generateWordSet } from "../typing/promptGenerator.js";
 import { calculateWPM } from "../typing/wpmCalc.js";
 import { calculateAccuracy } from "../typing/accuracyCalc.js";
-import { loadVehicleModel } from "../utils/assetLoader.js";
+import {
+  createCarGrid,
+  loadBaseCarModel,
+  usePlaceholderCarModel,
+} from "../game/carFactory.js";
 import { RACE_CONFIG } from "../game/raceConfig.js";
 import {
   fitRendererToAspect,
@@ -84,47 +88,32 @@ export async function startMultiplayerRace(container, room) {
 
   fitRendererToAspect(renderer, camera, container);
 
-  // ── Vehicles: reuse the shared car model so every mesh is cheap ─────────
-  const loadedCarModel = await loadVehicleModel(carModelUrl);
-  loadedCarModel.scale.setScalar(RACE_CONFIG.vehicle.multiplayerScale);
-  const carBounds = new THREE.Box3().setFromObject(loadedCarModel);
-  const carCenter = carBounds.getCenter(new THREE.Vector3());
-  const carModel = new THREE.Group();
-  loadedCarModel.position.set(-carCenter.x, -carBounds.min.y, -carCenter.z);
-  carModel.add(loadedCarModel);
-
-  function prepareCarMesh(mesh, color) {
-    mesh.traverse((child) => {
-      if (!child.isMesh) return;
-      child.frustumCulled = false;
-      const mat = child.material.clone();
-      mat.color.set(color);
-      mat.transparent = false;
-      mat.opacity = 1;
-      mat.depthWrite = true;
-      mat.side = THREE.DoubleSide;
-      child.material = mat;
-      child.castShadow = true;
-      child.receiveShadow = true;
-    });
-  }
-
-  // one lane per real player, assigned by their existing "slot" field
+  // ── Vehicles: one shared GLB, one variant per racer ──────────────────────
   const allPlayers = [...room.state.players.values()];
 
-  // Lanes follow the real road width; the car's measured width proves the road
-  // is wide enough for the grid.
+  // Same shared-model pipeline as the single-player race: the car GLB is loaded
+  // once per session and every racer gets a generated variant of it.
+  const carBaseModel = await loadBaseCarModel(carModelUrl).catch(
+    usePlaceholderCarModel,
+  );
+  const carGrid = createCarGrid(carBaseModel, {
+    worldScale: RACE_CONFIG.vehicle.multiplayerScale,
+    count: allPlayers.length,
+  });
+
+  // Lanes follow the real road width; the widest variant's measured width
+  // proves the road is wide enough for the grid.
   const gridTrackWidth = world.layout.trackWidth;
-  const gridCarHalfWidth = (carBounds.max.x - carBounds.min.x) / 2;
+  const gridCarHalfWidth = carGrid.halfWidth;
   describeStartGrid({
     laneCount: Math.max(RACE_CONFIG.world.laneCount, allPlayers.length),
     trackWidth: gridTrackWidth,
     carHalfWidth: gridCarHalfWidth,
   });
 
-  const vehicles = new Map(); // sessionId -> { mesh, curve }
+  const vehicles = new Map(); // sessionId -> { car, mesh, curve }
   let myVehicleMesh = null;
-  allPlayers.forEach((p) => {
+  allPlayers.forEach((p, index) => {
     const curve = createRaceLaneCurve(
       roadCenter,
       world.totalLength,
@@ -133,12 +122,12 @@ export async function startMultiplayerRace(container, room) {
       { trackWidth: gridTrackWidth },
     );
 
-    const mesh = carModel.clone();
-    prepareCarMesh(mesh, p.sessionId === room.sessionId ? 0xd946ef : 0x38bdf8);
-    scene.add(mesh);
-    vehicles.set(p.sessionId, { mesh, curve });
-    updateVehiclePosition(mesh, curve, 0, vehicleSurfaceY);
-    if (p.sessionId === room.sessionId) myVehicleMesh = mesh;
+    const car = carGrid.cars[index];
+    scene.add(car.root);
+    vehicles.set(p.sessionId, { car, mesh: car.root, curve });
+    updateVehiclePosition(car.root, curve, 0, vehicleSurfaceY);
+    car.resetMotion();
+    if (p.sessionId === room.sessionId) myVehicleMesh = car.root;
   });
 
   if (myVehicleMesh) {
@@ -314,10 +303,13 @@ export async function startMultiplayerRace(container, room) {
       if (myProgress >= 1) playerFinished = true;
     }
 
-    vehicles.forEach(({ mesh, curve }, sessionId) => {
+    vehicles.forEach(({ car, mesh, curve }, sessionId) => {
       const p = room.state.players.get(sessionId);
       const progress = p?.progress ?? 0;
       updateVehiclePosition(mesh, curve, progress, vehicleSurfaceY);
+      // Wheels roll from the distance each car actually covered, so they stay
+      // locked to the movement the server drives.
+      car.update(dt);
     });
 
     if (camera.preRaceCinematic && !cinematicReady) {

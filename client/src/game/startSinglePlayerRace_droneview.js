@@ -9,7 +9,11 @@ import { updateVehiclePosition } from "./vehicleController.js";
 import { generateWordSet } from "../typing/promptGenerator.js";
 import { calculateWPM } from "../typing/wpmCalc.js";
 import { calculateAccuracy } from "../typing/accuracyCalc.js";
-import { loadVehicleModel } from "../utils/assetLoader.js";
+import {
+  createCarGrid,
+  loadBaseCarModel,
+  usePlaceholderCarModel,
+} from "./carFactory.js";
 import { RACE_CONFIG } from "./raceConfig.js";
 import {
   fitRendererToAspect,
@@ -468,21 +472,25 @@ export async function startSinglePlayerRace(container) {
   const roadCenter = world.layout.roadCenter;
 
   // ── Vehicles ─────────────────────────────────────────────────────────────
-  // Loaded before the grid is laid out: the starting lanes depend on the real
-  // road width, and the car's measured width is what proves the road is wide
-  // enough for every car to sit fully inside the painted road.
-  const loadedCarModel = await loadVehicleModel(carModelUrl);
+  // The grid is laid out before the cars exist so the starting lanes depend on
+  // the real road width, and the widest car's measured width is what proves the
+  // road is wide enough for the whole field to sit inside the painted road.
+  // One GLB load feeds every car: the variants are generated from that single
+  // model, so the field costs one request and one set of textures.
+  const carBaseModel = await loadBaseCarModel(carModelUrl).catch(
+    usePlaceholderCarModel,
+  );
   document.getElementById("pre-race-loading")?.remove();
-  loadedCarModel.scale.setScalar(RACE_CONFIG.vehicle.singlePlayerScale);
-  const carBounds = new THREE.Box3().setFromObject(loadedCarModel);
-  const carTopHeight = carBounds.max.y - carBounds.min.y;
-  const carCenter = carBounds.getCenter(new THREE.Vector3());
-  const carModel = new THREE.Group();
-  loadedCarModel.position.set(-carCenter.x, -carBounds.min.y, -carCenter.z);
-  carModel.add(loadedCarModel);
+  const carGrid = createCarGrid(carBaseModel, {
+    worldScale: RACE_CONFIG.vehicle.singlePlayerScale,
+    count: RACE_CONFIG.world.laneCount,
+  });
+  const [playerCar, ...botCars] = carGrid.cars;
+  const vehicle = playerCar.root;
+  const carTopHeight = playerCar.bounds.height;
 
   const gridTrackWidth = world.layout.trackWidth;
-  const gridCarHalfWidth = (carBounds.max.x - carBounds.min.x) / 2;
+  const gridCarHalfWidth = carGrid.halfWidth;
   describeStartGrid({
     trackWidth: gridTrackWidth,
     carHalfWidth: gridCarHalfWidth,
@@ -530,24 +538,9 @@ export async function startSinglePlayerRace(container) {
 
   let viewport = fitRendererToAspect(renderer, camera, container);
 
-  function prepareCarMesh(mesh, color) {
-    mesh.traverse((child) => {
-      if (!child.isMesh) return;
-      child.frustumCulled = false;
-      const mat = child.material.clone();
-      mat.color.set(color);
-      mat.transparent = false;
-      mat.opacity = 1;
-      mat.depthWrite = true;
-      mat.side = THREE.DoubleSide;
-      child.material = mat;
-      child.castShadow = true;
-      child.receiveShadow = true;
-    });
-  }
-
-  const vehicle = carModel.clone();
-  prepareCarMesh(vehicle, 0xd946ef);
+  // Each variant is already painted, proportioned and rigged, so placing a car
+  // on the grid is just adding its root and handing it to the existing track
+  // placement code.
   scene.add(vehicle);
 
   const followCamera = createThirdPersonCamera(camera, vehicle, scene, {
@@ -565,10 +558,9 @@ export async function startSinglePlayerRace(container) {
 
   const raceDistance = world.totalLength * RACE_CONFIG.laps;
   const botRacers = botCurves.map((curve, i) => {
-    const mesh = carModel.clone();
-    prepareCarMesh(mesh, i === 0 ? 0x38bdf8 : i === 1 ? 0xef4444 : 0xfbbf24);
-    scene.add(mesh);
-    return { mesh, curve, bot: createBotRacer(i, raceDistance) };
+    const car = botCars[i];
+    scene.add(car.root);
+    return { car, mesh: car.root, curve, bot: createBotRacer(i, raceDistance) };
   });
   const gridVehicles = [vehicle, ...botRacers.map(({ mesh }) => mesh)];
 
@@ -576,6 +568,10 @@ export async function startSinglePlayerRace(container) {
   botRacers.forEach(({ mesh, curve }) => {
     updateVehiclePosition(mesh, curve, 0, vehicleSurfaceY);
   });
+  // The cars have just been placed, so drop the motion history the wheel rig
+  // keeps: the first update after this must not read the jump from the origin.
+  playerCar.resetMotion();
+  botRacers.forEach(({ car }) => car.resetMotion());
 
   // ── Typing state ─────────────────────────────────────────────────────────
   let progress = 0;
@@ -1033,6 +1029,12 @@ export async function startSinglePlayerRace(container) {
       }
     }
 
+    // Wheels follow the cars that were just placed above: rolling is derived
+    // from the distance each car actually covered, steering from its heading
+    // change, so parked cars during the intro and countdown stay still.
+    playerCar.update(frameDt);
+    botRacers.forEach(({ car }) => car.update(frameDt));
+
     climate.update(frameDt, vehicle.position);
     updateRaceProgressHud();
     updateWorldWordPosition();
@@ -1054,6 +1056,9 @@ export async function startSinglePlayerRace(container) {
     uiRoot.remove();
     followCamera.dispose();
     climate.dispose();
+    // Frees this grid's cloned materials and add-on parts. The shared base
+    // model, its geometry and its textures stay cached for the next race.
+    carGrid.dispose();
     renderer.dispose();
     container.innerHTML = "";
     if (previousContainerStyle === null) container.removeAttribute("style");
