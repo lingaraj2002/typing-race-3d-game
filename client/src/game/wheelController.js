@@ -73,6 +73,19 @@ function tokenRole(words, table) {
 
 function wheelSlotFromName(name) {
   const words = nameWords(name);
+  const compactSlot = words.find((word) =>
+    /^(fl|fr|rl|rr|bl|br)$/.test(word),
+  );
+  if (compactSlot) {
+    return {
+      fl: "frontLeft",
+      fr: "frontRight",
+      rl: "rearLeft",
+      rr: "rearRight",
+      bl: "rearLeft",
+      br: "rearRight",
+    }[compactSlot];
+  }
   const axle = tokenRole(words, AXLE_TOKENS);
   const side = tokenRole(words, SIDE_TOKENS);
   if (!axle || !side) return null;
@@ -117,16 +130,22 @@ function commonAncestor(nodes) {
 }
 
 /**
- * Resolves the wheel MESH for each slot.
+ * Resolves wheel meshes, falling back to named wheel assemblies when the GLB
+ * groups the tire, rim, brake and hub under a single transform node.
  *
  * The export duplicates every wheel name across a transform node and the mesh
  * below it, and a plain name lookup would return the transform node, so this
  * only ever matches meshes.
  */
-function findWheelMeshes(model) {
+function findWheelObjects(model) {
   const found = {};
   model.traverse((child) => {
     if (!child.isMesh) return;
+    const slot = wheelSlotFromName(child.name);
+    if (slot && !found[slot]) found[slot] = child;
+  });
+  model.traverse((child) => {
+    if (child.isMesh || !child.children.length) return;
     const slot = wheelSlotFromName(child.name);
     if (slot && !found[slot]) found[slot] = child;
   });
@@ -155,10 +174,10 @@ export function createWheelRig(options = {}) {
 
   if (!model) throw new Error("createWheelRig requires the cloned car model");
 
-  const meshes = findWheelMeshes(model);
+  const wheels = findWheelObjects(model);
   const slotNames = WHEEL_SLOTS;
-  const present = slotNames.filter((slot) => meshes[slot]);
-  const missing = slotNames.filter((slot) => !meshes[slot]);
+  const present = slotNames.filter((slot) => wheels[slot]);
+  const missing = slotNames.filter((slot) => !wheels[slot]);
 
   if (!present.length) {
     // Nothing to rig (placeholder car, or a model without wheels). The rest of
@@ -179,7 +198,7 @@ export function createWheelRig(options = {}) {
   // Full-subtree update: the wheel matrices are read below, and a clone starts
   // out with an identity world matrix until something walks the tree.
   model.updateWorldMatrix(true, true);
-  const ancestor = commonAncestor(present.map((slot) => meshes[slot]));
+  const ancestor = commonAncestor(present.map((slot) => wheels[slot]));
   if (!ancestor) throw new Error("createWheelRig could not find a wheel parent");
   _inverse.copy(ancestor.matrixWorld).invert();
 
@@ -188,21 +207,26 @@ export function createWheelRig(options = {}) {
   const originalParents = new Set();
 
   present.forEach((slot) => {
-    const mesh = meshes[slot];
-    const originalParent = mesh.parent;
+    const wheelObject = wheels[slot];
+    const originalParent = wheelObject.parent;
 
-    // The wheel's transform relative to the node the pivots hang from, so the
-    // mesh keeps its exported placement even if a future export moves it.
-    _local.multiplyMatrices(_inverse, mesh.matrixWorld);
+    // Measure all wheel parts together so multi-mesh assemblies keep their
+    // exported placement when they are moved under the animation pivots.
+    _wheelBox.makeEmpty();
+    wheelObject.traverse((child) => {
+      if (!child.isMesh || !child.geometry) return;
+      const geometry = child.geometry;
+      if (!geometry.boundingBox) geometry.computeBoundingBox();
+      _local.multiplyMatrices(_inverse, child.matrixWorld);
+      _geometryBox.copy(geometry.boundingBox).applyMatrix4(_local);
+      _wheelBox.union(_geometryBox);
+    });
+    _local.multiplyMatrices(_inverse, wheelObject.matrixWorld);
     _local.decompose(_position, _quaternion, _scale);
-
-    const geometry = mesh.geometry;
-    if (!geometry.boundingBox) geometry.computeBoundingBox();
-    _geometryBox.copy(geometry.boundingBox).applyMatrix4(_local);
-    _geometryBox.getCenter(_center);
+    _wheelBox.getCenter(_center);
 
     // Radius before scaling: the lift that follows keeps the tread on the road.
-    const radius = Math.max(_geometryBox.max.y - _center.y, MIN_WHEEL_RADIUS);
+    const radius = Math.max(_wheelBox.max.y - _center.y, MIN_WHEEL_RADIUS);
     _pivot.set(
       _center.x + Math.sign(_center.x || 1) * wheelOutset,
       _center.y + (scale - 1) * radius,
@@ -216,18 +240,18 @@ export function createWheelRig(options = {}) {
     const roll = new THREE.Group();
     roll.name = `${slot}-roll`;
     // Undo the pivot move so the exported geometry lands exactly where it was.
-    mesh.position.copy(_pivot).negate();
-    mesh.quaternion.copy(_quaternion);
-    mesh.scale.copy(_scale).multiplyScalar(scale);
+    wheelObject.position.copy(_pivot).negate();
+    wheelObject.quaternion.copy(_quaternion);
+    wheelObject.scale.copy(_scale).multiplyScalar(scale);
 
-    roll.add(mesh);
+    roll.add(wheelObject);
     steer.add(roll);
     ancestor.add(steer);
 
     slots[slot] = {
       steer,
       roll,
-      mesh,
+      mesh: wheelObject,
       radius,
       worldRadius: radius,
       steers: STEERING_SLOTS.includes(slot),

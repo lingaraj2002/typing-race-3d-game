@@ -5,8 +5,7 @@ import { renderLobby } from "./ui/lobby.js";
 import { renderCreateRoom } from "./ui/createRoom.js";
 import { renderJoinRoom } from "./ui/joinRoom.js";
 import { quickJoin, createRoom, joinRoomByCode } from "./network/roomClient.js";
-import { startMultiplayerRace } from "./ui/multiplayerRace.js";
-import { startSinglePlayerRace } from "./game//startSinglePlayerRace_droneview.js";
+import { startMultiplayerRace, startSinglePlayerRace } from "./game/race.js";
 
 const app = document.getElementById("app");
 const defaultName = "Player";

@@ -1,14 +1,12 @@
 /**
  * Car variant catalogue.
  *
- * One GLB is shared by every car in the game, so a "variant" is nothing more
- * than a data description of how that one model should be dressed: its paint,
- * how its proportions differ from the export, and any parts bolted on at
- * runtime. Nothing in this module touches Three.js, so adding a fifth car is a
- * data change plus one more key in CAR_VARIANT_KEYS.
+ * Variants describe a car's paint, proportions, and runtime add-ons. Nothing in
+ * this module touches Three.js, so adding a fifth variant is a data change plus
+ * one more key in CAR_VARIANT_KEYS.
  *
- * Units and axes (measured from vehicle_car.glb, which is authored in
- * centimetres and faces +Z):
+ * Units and axes (measured from car_vortex.glb, authored in centimetres and
+ * facing +Z):
  *   scale        multiplies the game's RACE_CONFIG.vehicle.*Scale
  *   bodyScale    stretches the body mesh only, about the car's ground centre
  *   wheelScale   grows the wheels about their axles; the rig lifts each wheel

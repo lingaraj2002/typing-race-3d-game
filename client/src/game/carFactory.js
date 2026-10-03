@@ -10,9 +10,8 @@ import { createWheelRig } from "./wheelController.js";
 /**
  * Shared-model car factory.
  *
- * The whole field runs on ONE load of vehicle_car.glb. `loadBaseCarModel`
- * memoises the request, and `createCar` deep-clones that single result per
- * car, so a rematch or a second race in the same session costs nothing extra.
+ * `loadBaseCarModel` memoises each GLB URL, and `createCar` deep-clones the
+ * loaded result per car, so a rematch or a second race costs no extra requests.
  *
  * Cloning shares geometry and textures by reference — exactly what four cars
  * want — but three.js also shares MATERIALS across a clone, so every car gets
@@ -36,10 +35,10 @@ const _localBox = new THREE.Box3();
 const _corner = new THREE.Vector3();
 const _vertex = new THREE.Vector3();
 
-let baseModelPromise = null;
+const baseModelPromises = new Map();
 
 /**
- * Loads the shared car model once per page session.
+ * Loads each car model once per URL per page session.
  *
  * Rejects (loudly) if the GLB cannot be read — the Draco decoder and the URL
  * both come from the project's single assetLoader, so there is no second
@@ -47,16 +46,17 @@ let baseModelPromise = null;
  * race running on the box car the way the rest of the game degrades.
  */
 export function loadBaseCarModel(url) {
-  if (!baseModelPromise) {
-    baseModelPromise = loadModel(url).catch((error) => {
+  if (!baseModelPromises.has(url)) {
+    const baseModelPromise = loadModel(url).catch((error) => {
       // Clear the memo so a later attempt can retry instead of replaying the
       // failure for the rest of the session.
-      baseModelPromise = null;
+      baseModelPromises.delete(url);
       console.error(`[cars] failed to load ${url}`, error);
       throw error;
     });
+    baseModelPromises.set(url, baseModelPromise);
   }
-  return baseModelPromise;
+  return baseModelPromises.get(url);
 }
 
 /**
@@ -77,7 +77,7 @@ function findBodyNode(model) {
   let group = null;
   let mesh = null;
   model.traverse((child) => {
-    if (child.name !== BODY_NODE_NAME) return;
+    if (child.name.toLowerCase() !== BODY_NODE_NAME.toLowerCase()) return;
     if (child.isMesh) mesh ??= child;
     else group ??= child;
   });
@@ -133,13 +133,15 @@ function paintMeshes(meshes, { color, metalness, roughness }, cache) {
     };
     mesh.material = Array.isArray(source) ? source.map(resolve) : resolve(source);
     // Mirrors the shadow setup the cars have always used.
-    mesh.castShadow = true;
-    mesh.receiveShadow = true;
-    // The cars are placed by hand each frame; keep the export's culling state
-    // out of the picture rather than trusting per-mesh bounds.
-    mesh.frustumCulled = false;
+    configureMesh(mesh);
   });
   return cache;
+}
+
+function configureMesh(mesh) {
+  mesh.castShadow = true;
+  mesh.receiveShadow = true;
+  mesh.frustumCulled = false;
 }
 
 /** World-space box of `object`, expressed in `frame`'s local space. */
@@ -305,10 +307,8 @@ function shortestAngleDelta(target, current) {
  *
  * @param {THREE.Object3D} baseModel the loaded GLB; never mutated
  * @param {object} [config] variant key, partial/full variant config, plus:
- *   `worldScale` — world units per model unit. The GLB is authored in
- *   centimetres, and the game has always replaced the export's own root scale
- *   with this value (RACE_CONFIG.vehicle.singlePlayerScale), so the same
- *   convention is kept here.
+ *   `worldScale` — multiplier applied to the exported model dimensions to fit
+ *   the game's world units.
  * @returns {object} car instance: { type, root, body, wheels, bounds, update, ... }
  */
 export function createCar(baseModel, config = {}) {
@@ -331,6 +331,9 @@ export function createCar(baseModel, config = {}) {
 
   const model = baseModel.clone(true);
   model.scale.setScalar(worldScale * variant.scale);
+  model.rotation.y = Number.isFinite(config.modelRotationY)
+    ? config.modelRotationY
+    : 0;
   holder.add(model);
   root.add(holder);
 
@@ -351,24 +354,30 @@ export function createCar(baseModel, config = {}) {
 
   const materialCache = new Map();
   const wheelCache = new Map();
-  paintMeshes(
-    bodyMeshes,
-    {
-      color: variant.color,
-      metalness: variant.metalness,
-      roughness: variant.roughness,
-    },
-    materialCache,
-  );
-  paintMeshes(
-    wheelMeshes,
-    {
-      color: variant.wheelColor,
-      metalness: variant.metalness,
-      roughness: variant.roughness,
-    },
-    wheelCache,
-  );
+  if (config.preserveMaterials) {
+    model.traverse((child) => {
+      if (child.isMesh) configureMesh(child);
+    });
+  } else {
+    paintMeshes(
+      bodyMeshes,
+      {
+        color: variant.color,
+        metalness: variant.metalness,
+        roughness: variant.roughness,
+      },
+      materialCache,
+    );
+    paintMeshes(
+      wheelMeshes,
+      {
+        color: variant.wheelColor,
+        metalness: variant.metalness,
+        roughness: variant.roughness,
+      },
+      wheelCache,
+    );
+  }
 
   const sink = { materials: [], geometries: [] };
   const bodyMesh = bodyMeshes[0] ?? findBodyMesh(model);
@@ -492,6 +501,7 @@ export function createCar(baseModel, config = {}) {
  * @param {number} [options.worldScale] world units per model unit
  * @param {string[]} [options.variants] catalogue keys, dealt out round-robin
  * @param {number} [options.count] how many cars the grid needs
+ * @param {boolean} [options.preserveMaterials] keep the GLB's original materials
  * @returns {{cars: object[], halfWidth: number, dispose: Function}}
  */
 export function createCarGrid(baseModel, options = {}) {
@@ -499,6 +509,7 @@ export function createCarGrid(baseModel, options = {}) {
     worldScale = 1,
     variants = CAR_VARIANT_KEYS,
     count = variants.length,
+    preserveMaterials = false,
   } = options;
 
   const keys = variants.length ? variants : [DEFAULT_CAR_VARIANT];
@@ -506,7 +517,11 @@ export function createCarGrid(baseModel, options = {}) {
   const cars = [];
   for (let index = 0; index < total; index++) {
     cars.push(
-      createCar(baseModel, { ...resolveCarVariant(keys[index % keys.length]), worldScale }),
+      createCar(baseModel, {
+        ...resolveCarVariant(keys[index % keys.length]),
+        worldScale,
+        preserveMaterials,
+      }),
     );
   }
 
