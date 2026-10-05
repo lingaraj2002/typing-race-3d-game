@@ -474,7 +474,10 @@ async function createRaceStage(container) {
   const scene = createScene();
   const lighting = addRaceLighting(scene);
 
-  const world = await buildWorld(scene, trackTileUrl, { tileCount: 10 });
+  const world = await buildWorld(scene, trackTileUrl, {
+    tileCount: 10,
+    lights: lighting,
+  });
   const trackSurfaceY = world.surfaceY;
   const vehicleSurfaceY = trackSurfaceY + 0.05;
   const roadCenter = world.layout.roadCenter;
@@ -1243,6 +1246,7 @@ export async function startSinglePlayerRace(container) {
       ...typing.readPerformance(),
       speed: speed.toFixed(2),
     });
+    world.update(frameDt);
     renderer.render(scene, camera);
   }
   animate();
@@ -1571,6 +1575,7 @@ export async function startMultiplayerRace(container, room) {
       // change-detection key.
       speed: 0,
     });
+    world.update(frameDt);
     renderer.render(scene, camera);
   }
   animate();

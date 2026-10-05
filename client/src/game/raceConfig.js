@@ -133,8 +133,62 @@ export const RACE_CONFIG = Object.freeze({
     barnRed: 0xc76b53,
     roof: 0x46676e,
     creamWall: 0xfff7df,
-    waterShallow: 0x2faeb8,
-    waterDeep: 0x0a4f59,
+    // Four neighbouring shades of blue and cyan for the sea's band ramp, dark
+    // trough to pale crest. They sit close together in value on purpose: a wide
+    // range would read as contrast rather than as paint.
+    waterDeep: 0x2a80b4,
+    waterMid: 0x2a8ec4,
+    waterShallow: 0x46b0d6,
+    waterHighlight: 0x7ed2e0,
+  },
+  // Cartoon sea surface, driven entirely by the ShaderMaterial in
+  // game/stylizedWater.js. Every knob the shader exposes lives here so the water
+  // can be re-tuned without touching any GLSL. The surface itself is flat: there
+  // is no displacement, no normal and no specular, only this colour pattern.
+  water: {
+    // How far the band field swings, which decides how much of the ramp the sea
+    // actually travels. Lower = broader, calmer shapes.
+    bandGain: 0.4,
+    // Global band speed. Every layer's drift is relative to this one value, so it
+    // is the single "how fast does the sea flow" control. 0.25 slides the widest
+    // band about 1.6 units per second: slow enough to stay calm, fast enough to
+    // read as moving water.
+    bandSpeed: 0.25,
+    // Rings that run parallel to the beach, so the pattern reads as water next
+    // to the sand and carries on seamlessly across the deep skirt.
+    // Gain is their share of the field, frequency their spacing in beach radii
+    // (6.5 puts one ring about every 100 units offshore), speed is their drift
+    // relative to bandSpeed.
+    radialGain: 0.7,
+    radialFrequency: 5.2,
+    radialSpeed: 0.4,
+    // One very low frequency drift that curves the bands into long strokes
+    // instead of a grid. Scale 0.006 means the shapes are ~170 units across;
+    // amount is how far they bend.
+    noiseAmount: 0.55,
+    noiseScale: 0.006,
+    noiseDrift: 0.05,
+    // Pale shallow tint along the sand: a simple wash, no foam line and no
+    // spray. End is the beach radius (1 sits on the sand) where it is gone.
+    shoreTint: 0.35,
+    shoreTintEnd: 1.4,
+    // Gentle deepening as the sea floor drops away. The deep skirt sits entirely
+    // past uDepthEnd, at the same value as the disc's outer edge, which is what
+    // keeps the join between the two meshes invisible.
+    depthStrength: 0.55,
+    depthStart: 1.5,
+    depthEnd: 2.5,
+    // World-space distance band over which the bands fade out, so the far sea
+    // becomes one flat tone instead of shimmering. These sit past the ~250 units
+    // of water a player can actually see, so the pattern stays legible at the
+    // real camera distance.
+    detailFadeStart: 260,
+    detailFadeEnd: 700,
+    // The surface is flat, so its lighting is a single constant. These are how
+    // much of the scene's sun and sky light the water picks up; together they
+    // land the sea at roughly the same brightness as the sand in daylight.
+    sunStrength: 0.42,
+    ambientStrength: 0.42,
   },
   world: {
     roadHeight: 4,

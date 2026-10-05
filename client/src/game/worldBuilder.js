@@ -12,6 +12,7 @@ import {
   TRACK_RADIUS_X,
   TRACK_RADIUS_Z,
 } from "./track.js";
+import { createStylizedWater } from "./stylizedWater.js";
 
 // ─── Terrain Geometry ────────────────────────────────────────────────────────
 
@@ -76,23 +77,45 @@ function createEllipseRingGeometry(
   return geometry;
 }
 
-function createOcean(worldGroup, layout) {
+// The sea shader displaces its vertices, so the visible water needs enough
+// radial rows for the swell to read as a surface rather than a fan of
+// triangles. Roughly half of these rows land past the beach edge, which is the
+// only water the player ever sees; the rest sit hidden under the land.
+const OCEAN_SEGMENTS = 128;
+const OCEAN_ROWS = 52;
+
+function createOceanRows(count) {
+  const rows = new Array(count + 1);
+  for (let i = 0; i <= count; i++) rows[i] = i / count;
+  return rows;
+}
+
+/**
+ * The sea: a shallow disc carrying the stylized water shader, plus a slightly
+ * larger and lower skirt that carries the same material out to the horizon.
+ *
+ * Both meshes share one material and both sample their waves from world
+ * coordinates, so the skirt continues the swell exactly where the disc ends
+ * and no seam shows at the join.
+ *
+ * The shader does its own lighting and never samples the shadow map, so the
+ * meshes stay out of both shadow passes.
+ */
+function createOcean(worldGroup, layout, lights) {
+  const water = createStylizedWater({ layout, lights });
+  const oceanRows = createOceanRows(OCEAN_ROWS);
+
   const ocean = mesh(
     createEllipseRingGeometry(
       layout.oceanRadiusX,
       layout.oceanRadiusZ,
       0,
       0,
-      72,
+      OCEAN_SEGMENTS,
+      { rows: oceanRows },
     ),
-    new THREE.MeshStandardMaterial({
-      color: RACE_CONFIG.palette.waterShallow,
-      roughness: 0.15,
-      metalness: 0.35,
-      transparent: true,
-      opacity: 0.9,
-    }),
-    { cast: false, receive: true },
+    water.material,
+    { cast: false, receive: false },
   );
   ocean.position.set(layout.centerX, layout.waterY, layout.centerZ);
   ocean.name = "ocean";
@@ -106,15 +129,14 @@ function createOcean(worldGroup, layout) {
       0,
       48,
     ),
-    new THREE.MeshStandardMaterial({
-      color: RACE_CONFIG.palette.waterDeep,
-      roughness: 0.25,
-    }),
-    { cast: false, receive: true },
+    water.material,
+    { cast: false, receive: false },
   );
   deepOcean.position.set(layout.centerX, layout.waterY - 1.2, layout.centerZ);
+  deepOcean.name = "ocean-deep";
   worldGroup.add(deepOcean);
-  return ocean;
+
+  return water;
 }
 
 // Radial rows for the sculpted land meshes (fractions, inner edge -> outer
@@ -379,8 +401,16 @@ function createClouds(worldGroup, layout) {
  * assembled by track.js (assembleTrackModel); this module only renders the
  * assembled track and builds the surrounding terrain (ocean, beach, infield
  * ground) and clouds so track asset maintenance stays in one file.
+ *
+ * Pass the race light rig in as `lights` so the water shader can read the live
+ * sun and sky values each frame; call `update(dt)` from the render loop to
+ * advance the waves.
  */
-export async function buildWorld(scene, tileUrl, { tileCount = 10 } = {}) {
+export async function buildWorld(
+  scene,
+  tileUrl,
+  { tileCount = 10, lights = null } = {},
+) {
   const {
     group: trackGroup,
     layout,
@@ -393,7 +423,7 @@ export async function buildWorld(scene, tileUrl, { tileCount = 10 } = {}) {
   const worldGroup = new THREE.Group();
   worldGroup.name = "world";
 
-  createOcean(worldGroup, layout);
+  const water = createOcean(worldGroup, layout, lights);
   createBeach(worldGroup, layout);
   const infieldGround = createInfieldGround(worldGroup, layout);
   groundInfieldProps(trackGroup, infieldGround);
@@ -411,5 +441,10 @@ export async function buildWorld(scene, tileUrl, { tileCount = 10 } = {}) {
     totalLength,
     layout,
     clouds,
+    water,
+    /** Per-frame world animation; the sea shader's clock is the only one. */
+    update(dt) {
+      water.update(dt);
+    },
   };
 }

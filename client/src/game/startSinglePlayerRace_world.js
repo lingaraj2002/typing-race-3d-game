@@ -7,9 +7,12 @@ export async function startSinglePlayerRace(container) {
   container.innerHTML = `<div id="world-debug" style="position:fixed;top:12px;left:12px;color:#7dd3fc;font-family:monospace;background:rgba(0,0,0,0.6);padding:8px 12px;font-size:12px;">loading world…</div>`;
 
   const scene = createScene();
-  addRaceLighting(scene);
+  const lighting = addRaceLighting(scene);
 
-  const world = await buildWorld(scene, trackTileUrl, { tileCount: 10 });
+  const world = await buildWorld(scene, trackTileUrl, {
+    tileCount: 10,
+    lights: lighting,
+  });
 
   // Surface these numbers on screen — they tell you immediately whether the
   // artist's export scale matches the game's units.
@@ -42,6 +45,7 @@ export async function startSinglePlayerRace(container) {
   container.appendChild(renderer.domElement);
 
   let camHeight = camera.position.y;
+  let lastTime = performance.now();
   function onKey(e) {
     if (e.key === "ArrowUp") camHeight = Math.max(40, camHeight - 15);
     if (e.key === "ArrowDown") camHeight += 15;
@@ -52,6 +56,9 @@ export async function startSinglePlayerRace(container) {
 
   function animate() {
     requestAnimationFrame(animate);
+    const now = performance.now();
+    world.update(Math.min((now - lastTime) / 1000, 0.05));
+    lastTime = now;
     renderer.render(scene, camera);
   }
   animate();
